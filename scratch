@@ -1,0 +1,103 @@
+Issues
+
+How to cordon off my cluster within aws using security groups?
+My solution was to use the internal IP for both address and internal_address in the rancher-cluster.yml
+
+Following the docs online, I was not able to setup the LB before the cluster was up
+My theory is that I will be able to setup the LB after the cluster is up and once the /healthz endpoints become available
+
+#get instances by Name
+aws ec2 describe-tags --filters "Name=tag:Name,Values=mak3r-gpu-test*" "Name=resource-type,Values=instance"
+
+#just instance ids
+aws ec2 describe-tags --filters "Name=tag:Name,Values=mak3r-gpu-test*" "Name=resource-type,Values=instance" | jq ."Tags"[]."ResourceId"
+
+#which ones are actually running 
+aws ec2 describe-instances --filters "Name=instance-state-code,Values=16" --instance-ids
+
+#just show me the instance ids (without quotes)
+jq -r '."Reservations"[]."Instances"[]."InstanceId"'
+
+# generate the instance list based on the instance Name tags
+./generate-instance-list.sh -n "mak3r-gpu-test-*" > instance-ids.json
+
+
+# Run these kubectl commands to lable the nodes so we can use nodeSelectors for GPU affinity
+kubectl get nodes --show-labels
+kubectl label nodes --all mak3r.demo/isgpu=no
+kubectl get nodes --show-labels
+kubectl label --overwrite nodes ip-172-31-59-203 mak3r.demo/isgpu=yes
+kubectl get nodes --show-labels
+
+# Installation instructions
+https://github.com/nvidia/nvidia-docker/wiki/Installation-(version-2.0)
+
+# repo configuration
+https://nvidia.github.io/nvidia-docker/
+
+# nvidia docker runtime install directions
+##################
+https://github.com/NVIDIA/nvidia-docker
+
+# Lable for GPU node affinity
+# Label your nodes with the accelerator type they have.
+##################
+kubectl label nodes <node-with-k80> accelerator=nvidia-tesla-k80
+
+
+
+ldconfig -p | grep nvidia
+sudo apt-get remove nvidia-384 ; sudo apt-get install nvidia-384
+
+#download and install the nvidia drivers
+##################
+curl -o NVIDIA-Linux-x86_64-390.87.run http://us.download.nvidia.com/XFree86/Linux-x86_64/390.87/NVIDIA-Linux-x86_64-390.87.run
+chmod +x NVIDIA-Linux-x86_64-390.87.run
+sudo ./NVIDIA-Linux-x86_64-390.87.run
+
+# possibility to install nvidia drivers without logging in
+# ERROR could not find X location
+# --compat32-libdir regarding 32 bit compatibility - turn off this flag?
+
+`/etc/docker/daemon.json`
+```
+{
+    "default-runtime": "nvidia",
+    "runtimes": {
+        "nvidia": {
+            "path": "/usr/bin/nvidia-container-runtime",
+            "runtimeArgs": []
+        }
+    }
+}
+```
+# test the nvidia drivers in docker only
+##################
+docker run --runtime=nvidia --rm nvidia/cuda:9.0-base nvidia-smi
+
+#################
+# EVERYTHING ELSE MUST BE 100% setup before this can work
+# run this on the cluster - deploy the device plugin as a daemonset
+#################
+kubectl create -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v1.11/nvidia-device-plugin.yml
+
+# A test container
+#################
+https://github.com/kubernetes/kubernetes/tree/v1.7.11/test/images/nvidia-cuda
+
+ssh -i gcp/gcp-mak3r  markabrams@<public_ip>
+
+# Create docker images for pulling into k8s clusters to demo
+docker build -t vector-add:job ./vector-add-demo/
+docker tag d8fcec3ccec5 mak3r/cuda-vector-add:job002
+docker push mak3r/cuda-vector-add:job002
+
+# Images for demo
+## Default CUDA image(s) - run `nvidia-smi` in the container to see the gpu stats
+nvidia/cuda:9.0-base
+## Simple container with a cuda demo app - run `./vectorAdd` inside the container pass a whole number argument to indicate how many vectors to add
+mak3r/cuda-vector-add:demo-007
+## Simple job container - Docker command in container is ./vectorAdd. It will use the default number of vectors to add - run it as a cron job
+mak3r/cuda-vector-add:job002
+## Run vector add as just a pod by loading `vector-add.yml` in the rancher deployment page or use kubectl
+`kubectl create -f https://raw.githubusercontent.com/mak3r/gpu-k8s/vector-add.yml
